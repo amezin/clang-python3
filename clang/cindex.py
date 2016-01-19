@@ -64,6 +64,7 @@ call is efficient.
 
 from ctypes import *
 import collections
+import functools
 
 import clang.enumerations
 
@@ -144,6 +145,32 @@ class CachedProperty(object):
         return value
 
 
+class _EncodeString(object):
+
+    @classmethod
+    def from_param(_, value):
+        if value is None or isinstance(value, bytes):
+            return value
+        assert isinstance(value, str)
+        return value.encode()
+
+    @staticmethod
+    def decode(value, *_):
+        if value is None or isinstance(value, str):
+            return value
+        assert isinstance(value, bytes)
+        return value.decode()
+
+    @staticmethod
+    def decode_result(func):
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            return _EncodeString.decode(func(*args, **kwargs))
+
+        return wrapper
+
+
 class _CXString(Structure):
     """Helper for transforming CXString results."""
 
@@ -156,6 +183,11 @@ class _CXString(Structure):
     def from_result(res, fn, args):
         assert isinstance(res, _CXString)
         return conf.lib.clang_getCString(res)
+
+    def __str__(self):
+        return str(None) if self.spelling is None else \
+            _EncodeString.decode(self.spelling)
+
 
 class SourceLocation(Structure):
     """
@@ -1875,7 +1907,7 @@ class Type(Structure):
         """
         Retrieve the offset of a field in the record.
         """
-        return conf.lib.clang_Type_getOffsetOf(self, c_char_p(fieldname))
+        return conf.lib.clang_Type_getOffsetOf(self, fieldname)
 
     def get_ref_qualifier(self):
         """
@@ -1968,6 +2000,7 @@ class CompletionChunk:
         return "{'" + self.spelling + "', " + str(self.kind) + "}"
 
     @CachedProperty
+    @_EncodeString.decode_result
     def spelling(self):
         if self.__kindNumber in SpellingCache:
                 return SpellingCache[self.__kindNumber]
@@ -2077,7 +2110,7 @@ class CompletionString(ClangObject):
         return " | ".join([str(a) for a in self]) \
                + " || Priority: " + str(self.priority) \
                + " || Availability: " + str(self.availability) \
-               + " || Brief comment: " + str(self.briefComment.spelling)
+               + " || Brief comment: " + str(self.briefComment)
 
 availabilityKinds = {
             0: CompletionChunk.Kind("Available"),
@@ -2274,7 +2307,8 @@ class TranslationUnit(ClangObject):
 
         args_array = None
         if len(args) > 0:
-            args_array = (c_char_p * len(args))(* args)
+            args_array = (c_char_p * len(args))(* (_EncodeString.from_param(a)
+                                                   for a in args))
 
         unsaved_array = None
         if len(unsaved_files) > 0:
@@ -2283,7 +2317,8 @@ class TranslationUnit(ClangObject):
                 if hasattr(contents, "read"):
                     contents = contents.read()
 
-                unsaved_array[i].name = name
+                unsaved_array[i].name = _EncodeString.from_param(name)
+                contents = _EncodeString.from_param(contents)
                 unsaved_array[i].contents = contents
                 unsaved_array[i].length = len(contents)
 
@@ -2529,7 +2564,8 @@ class TranslationUnit(ClangObject):
                     print(value)
                 if not isinstance(value, str):
                     raise TypeError('Unexpected unsaved file contents.')
-                unsaved_files_array[i].name = name
+                unsaved_files_array[i].name = _EncodeString.from_param(name)
+                value = _EncodeString.from_param(value)
                 unsaved_files_array[i].contents = value
                 unsaved_files_array[i].length = len(value)
         ptr = conf.lib.clang_codeCompleteAt(self, path, line, column,
@@ -2790,7 +2826,7 @@ functionList = [
    [c_object_p]),
 
   ("clang_CompilationDatabase_fromDirectory",
-   [c_char_p, POINTER(c_uint)],
+   [_EncodeString, POINTER(c_uint)],
    c_object_p,
    CompilationDatabase.from_result),
 
@@ -2800,7 +2836,7 @@ functionList = [
    CompileCommands.from_result),
 
   ("clang_CompilationDatabase_getCompileCommands",
-   [c_object_p, c_char_p],
+   [c_object_p, _EncodeString],
    c_object_p,
    CompileCommands.from_result),
 
@@ -2830,7 +2866,7 @@ functionList = [
    c_uint),
 
   ("clang_codeCompleteAt",
-   [TranslationUnit, c_char_p, c_int, c_int, c_void_p, c_int, c_int],
+   [TranslationUnit, _EncodeString, c_int, c_int, c_void_p, c_int, c_int],
    POINTER(CCRStructure)),
 
   ("clang_codeCompleteGetDiagnostic",
@@ -2846,7 +2882,7 @@ functionList = [
    c_object_p),
 
   ("clang_createTranslationUnit",
-   [Index, c_char_p],
+   [Index, _EncodeString],
    c_object_p),
 
   ("clang_CXXMethod_isPureVirtual",
@@ -2956,7 +2992,8 @@ functionList = [
 
   ("clang_getCString",
    [_CXString],
-   c_char_p),
+   c_char_p,
+   _EncodeString.decode),
 
   ("clang_getCursor",
    [TranslationUnit, SourceLocation],
@@ -3099,7 +3136,7 @@ functionList = [
    Type.from_result),
 
   ("clang_getFile",
-   [TranslationUnit, c_char_p],
+   [TranslationUnit, _EncodeString],
    c_object_p),
 
   ("clang_getFileName",
@@ -3224,7 +3261,8 @@ functionList = [
 
   ("clang_getTUResourceUsageName",
    [c_uint],
-   c_char_p),
+   c_char_p,
+   _EncodeString.decode),
 
   ("clang_getTypeDeclaration",
    [Type],
@@ -3319,7 +3357,7 @@ functionList = [
    bool),
 
   ("clang_parseTranslationUnit",
-   [Index, c_char_p, c_void_p, c_int, c_void_p, c_int, c_int],
+   [Index, _EncodeString, c_void_p, c_int, c_void_p, c_int, c_int],
    c_object_p),
 
   ("clang_reparseTranslationUnit",
@@ -3327,7 +3365,7 @@ functionList = [
    c_int),
 
   ("clang_saveTranslationUnit",
-   [TranslationUnit, c_char_p, c_uint],
+   [TranslationUnit, _EncodeString, c_uint],
    c_int),
 
   ("clang_tokenize",
@@ -3391,7 +3429,7 @@ functionList = [
    Type.from_result),
 
   ("clang_Type_getOffsetOf",
-   [Type, c_char_p],
+   [Type, _EncodeString],
    c_longlong),
 
   ("clang_Type_getSizeOf",
